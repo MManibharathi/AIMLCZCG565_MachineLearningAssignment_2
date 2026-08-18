@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import seaborn as sns
+import os
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
@@ -16,33 +16,47 @@ from sklearn.metrics import (
     classification_report
 )
 
+# ============================================================
+# Page Configuration
+# ============================================================
+
 st.set_page_config(
-    page_title="ML Model Assignment-2 Evaluation App",
-    page_icon="📊",
+    page_title="Machine Learning Model Evaluation App",
     layout="wide"
 )
 
 st.title("Machine Learning Model Evaluation App")
-st.write("Upload test data, select a model, and view evaluation results.")
 
-# ---------------------------------------------------------
-# Model file mapping
-# ---------------------------------------------------------
+st.write(
+    "Upload test data, select a machine learning model, and view evaluation metrics, "
+    "confusion matrix, classification report, and comparison of different models."
+)
+
+# ============================================================
+# Model Paths Based on Your Folder Structure
+# ============================================================
+
+MODEL_DIR = "model"
+
 model_files = {
-    "Logistic Regression": "logistic_regression.pkl",
-    "Decision Tree Classifier": "decision_tree.pkl",
-    "K-Nearest Neighbor Classifier": "knn.pkl",
-    "Gaussian Naive Bayes": "naive_bayes.pkl",
-    "Random Forest Classifier": "random_forest.pkl"
+    "Logistic Regression": os.path.join(MODEL_DIR, "logistic_regression.pkl"),
+    "Decision Tree Classifier": os.path.join(MODEL_DIR, "decision_tree_classifier.pkl"),
+    "K-Nearest Neighbor Classifier": os.path.join(MODEL_DIR, "k_nearest_neighbor_classifier.pkl"),
+    "Gaussian Naive Bayes": os.path.join(MODEL_DIR, "gaussian_naive_bayes.pkl"),
+    "Random Forest Classifier": os.path.join(MODEL_DIR, "random_forest_classifier.pkl")
 }
 
-# ---------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------
-st.sidebar.header("App Controls")
+feature_columns_path = os.path.join(MODEL_DIR, "feature_columns.pkl")
+scaler_path = os.path.join(MODEL_DIR, "scaler.pkl")
+
+# ============================================================
+# Sidebar Controls
+# ============================================================
+
+st.sidebar.header("Controls")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload test CSV file",
+    "Upload Test Dataset (CSV)",
     type=["csv"]
 )
 
@@ -51,59 +65,179 @@ selected_model_name = st.sidebar.selectbox(
     list(model_files.keys())
 )
 
-target_column = st.sidebar.text_input(
-    "Enter target column name",
-    value="target"
-)
+st.write("Selected Model:", selected_model_name)
 
-# ---------------------------------------------------------
-# Main logic
-# ---------------------------------------------------------
+# ============================================================
+# Function to Plot Confusion Matrix
+# ============================================================
+
+def plot_confusion_matrix(cm, class_names):
+    fig, ax = plt.subplots(figsize=(5, 4))
+
+    ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.set_title("Confusion Matrix")
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("Actual Label")
+
+    tick_marks = np.arange(len(class_names))
+    ax.set_xticks(tick_marks)
+    ax.set_yticks(tick_marks)
+    ax.set_xticklabels(class_names)
+    ax.set_yticklabels(class_names)
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j,
+                i,
+                cm[i, j],
+                ha="center",
+                va="center",
+                color="black"
+            )
+
+    plt.tight_layout()
+    return fig
+
+# ============================================================
+# Function to Prepare Test Data
+# ============================================================
+
+def prepare_test_data(df, target_column):
+    y_test = df[target_column]
+    X_test = df.drop(columns=[target_column])
+
+    if os.path.exists(feature_columns_path):
+        feature_columns = joblib.load(feature_columns_path)
+
+        missing_columns = [col for col in feature_columns if col not in X_test.columns]
+        extra_columns = [col for col in X_test.columns if col not in feature_columns]
+
+        if len(missing_columns) > 0:
+            st.warning("Some required feature columns are missing in uploaded test data. Missing columns are filled with 0.")
+            st.write(missing_columns)
+
+        if len(extra_columns) > 0:
+            st.info("Extra columns found in uploaded test data. These columns will be ignored.")
+            st.write(extra_columns)
+
+        X_test = X_test.reindex(columns=feature_columns, fill_value=0)
+
+    if os.path.exists(scaler_path):
+        scaler = joblib.load(scaler_path)
+        X_test = scaler.transform(X_test)
+
+    return X_test, y_test
+
+# ============================================================
+# Function to Evaluate Model
+# ============================================================
+
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+
+    auc_score = None
+
+    try:
+        if hasattr(model, "predict_proba"):
+            y_prob = model.predict_proba(X_test)
+
+            if y_prob.shape[1] == 2:
+                auc_score = roc_auc_score(y_test, y_prob[:, 1])
+            else:
+                auc_score = roc_auc_score(y_test, y_prob, multi_class="ovr")
+
+        elif hasattr(model, "decision_function"):
+            y_score = model.decision_function(X_test)
+            auc_score = roc_auc_score(y_test, y_score)
+
+    except Exception:
+        auc_score = None
+
+    accuracy = accuracy_score(y_test, y_pred)
+
+    precision = precision_score(
+        y_test,
+        y_pred,
+        average="weighted",
+        zero_division=0
+    )
+
+    recall = recall_score(
+        y_test,
+        y_pred,
+        average="weighted",
+        zero_division=0
+    )
+
+    f1 = f1_score(
+        y_test,
+        y_pred,
+        average="weighted",
+        zero_division=0
+    )
+
+    mcc = matthews_corrcoef(y_test, y_pred)
+
+    return y_pred, accuracy, auc_score, precision, recall, f1, mcc
+
+# ============================================================
+# Main App Logic
+# ============================================================
+
 if uploaded_file is not None:
+
     df = pd.read_csv(uploaded_file)
 
-    st.subheader("Uploaded Test Dataset")
-    st.write("Dataset shape:", df.shape)
+    st.success("CSV uploaded successfully!")
+
+    st.subheader("Uploaded Test Dataset Preview")
+    st.write("Dataset Shape:", df.shape)
     st.dataframe(df.head())
 
-    if target_column not in df.columns:
-        st.error(f"Target column '{target_column}' not found in uploaded CSV.")
-        st.write("Available columns are:")
-        st.write(df.columns.tolist())
-    else:
-        X_test = df.drop(columns=[target_column])
-        y_test = df[target_column]
+    # Better target column default selection
+    possible_target_columns = ["target", "label", "class", "y", "deposit", "Output", "output"]
 
-        model_path = model_files[selected_model_name]
+    default_target_index = len(df.columns) - 1
 
-        try:
-            model = joblib.load(model_path)
+    for col in possible_target_columns:
+        if col in df.columns:
+            default_target_index = list(df.columns).index(col)
+            break
 
-            st.success(f"Loaded model: {selected_model_name}")
+    target_column = st.sidebar.selectbox(
+        "Select Target Column",
+        df.columns,
+        index=default_target_index
+    )
 
-            y_pred = model.predict(X_test)
+    st.write("Selected Target Column:", target_column)
 
-            # Probability prediction for AUC
-            auc_score = None
+    st.warning(
+        "Important: Do not select feature columns like V1, V2, V3 as target. "
+        "Select the actual output column, for example y, target, label, class, or deposit."
+    )
 
-            if hasattr(model, "predict_proba"):
-                try:
-                    y_prob = model.predict_proba(X_test)[:, 1]
-                    auc_score = roc_auc_score(y_test, y_prob)
-                except Exception:
-                    auc_score = None
-            else:
-                try:
-                    y_score = model.decision_function(X_test)
-                    auc_score = roc_auc_score(y_test, y_score)
-                except Exception:
-                    auc_score = None
+    try:
+        X_test, y_test = prepare_test_data(df, target_column)
 
-            accuracy = accuracy_score(y_test, y_pred)
-            precision = precision_score(y_test, y_pred, zero_division=0)
-            recall = recall_score(y_test, y_pred, zero_division=0)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
-            mcc = matthews_corrcoef(y_test, y_pred)
+        selected_model_file = model_files[selected_model_name]
+
+        if not os.path.exists(selected_model_file):
+            st.error(f"Model file not found: {selected_model_file}")
+        else:
+            model = joblib.load(selected_model_file)
+            st.success(f"Model loaded successfully: {selected_model_name}")
+
+            y_pred, accuracy, auc_score, precision, recall, f1, mcc = evaluate_model(
+                model,
+                X_test,
+                y_test
+            )
+
+            # ========================================================
+            # Evaluation Metrics
+            # ========================================================
 
             st.subheader("Evaluation Metrics")
 
@@ -117,23 +251,21 @@ if uploaded_file is not None:
             col5.metric("F1 Score", f"{f1:.6f}")
             col6.metric("MCC Score", f"{mcc:.6f}")
 
+            # ========================================================
+            # Confusion Matrix
+            # ========================================================
+
             st.subheader("Confusion Matrix")
 
-            cm = confusion_matrix(y_test, y_pred)
+            labels = sorted(y_test.unique())
+            cm = confusion_matrix(y_test, y_pred, labels=labels)
 
-            fig, ax = plt.subplots(figsize=(5, 4))
-            sns.heatmap(
-                cm,
-                annot=True,
-                fmt="d",
-                cmap="Blues",
-                ax=ax
-            )
-            ax.set_xlabel("Predicted Label")
-            ax.set_ylabel("Actual Label")
-            ax.set_title(f"Confusion Matrix - {selected_model_name}")
-
+            fig = plot_confusion_matrix(cm, labels)
             st.pyplot(fig)
+
+            # ========================================================
+            # Classification Report
+            # ========================================================
 
             st.subheader("Classification Report")
 
@@ -146,14 +278,10 @@ if uploaded_file is not None:
 
             report_df = pd.DataFrame(report).transpose()
             st.dataframe(report_df)
-
-        except FileNotFoundError:
-            st.error(f"Model file not found: {model_path}")
-            st.write("Please make sure the model `.pkl` files are available in the same folder as app.py.")
-
-        except Exception as e:
-            st.error("An error occurred while evaluating the model.")
-            st.exception(e)
+           
+    except Exception as e:
+        st.error("Error occurred while evaluating the model.")
+        st.exception(e)
 
 else:
-    st.info("Please upload a test CSV file from the sidebar.")
+    st.info("Please upload a test CSV file from the sidebar to start evaluation.")
